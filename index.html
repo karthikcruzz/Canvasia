@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Canvasia</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="page-header">
+      <h1>Canvasia</h1>
+      <p>Co-create a painting prompt through a focused exchange between your direction and Canvasia's imagination.</p>
+    </header>
+
+    <section class="workspace">
+      <section class="conversation-panel" aria-labelledby="conversationTitle">
+        <section class="controls" aria-label="Collaboration controls">
+          <div class="starter-control">
+            <!-- <span class="field-label">Choose opener</span> -->
+            <div class="starter-buttons" id="starterButtons">
+              <button class="starter-button" type="button" data-starter="Human">Human Starts</button>
+              <button class="starter-button" type="button" data-starter="AI">Canvasia Starts</button>
+            </div>
+          </div>
+
+          <div class="session-buttons">
+            <button class="primary-button" id="startButton" type="button">Start</button>
+            <button class="secondary-button" id="resetButton" type="button">Reset</button>
+          </div>
+        </section>
+
+        <h2 id="conversationTitle">Conversation</h2>
+        <div class="chat-container" id="chatContainer"></div>
+        <div id="conversationInput"></div>
+        <div class="creative-actions" aria-label="Creative actions">
+          <button class="tool-button" id="sketchButton" type="button">Sketch</button>
+          <button class="tool-button accent" id="generateButton" type="button">Generate Image</button>
+          <button class="tool-button" id="editImageButton" type="button" disabled>Edit Generated Image</button>
+        </div>
+      </section>
+
+      <section class="middle-column" aria-label="Prompt and painting summary">
+        <aside class="live-panel" aria-labelledby="livePromptTitle">
+          <h2 id="livePromptTitle">Live Prompt</h2>
+          <section class="content-card live-card">
+            <p class="live-prompt" id="livePrompt">Pending...</p>
+          </section>
+        </aside>
+
+        <aside class="summary-panel" aria-labelledby="summaryTitle">
+          <h2 id="summaryTitle">Painting Summary</h2>
+          <div class="summary-scroll">
+            <section class="field-group wide">
+              <!-- <h3>Chosen Elements</h3> -->
+              <div class="content-card">
+                <div class="summary-list" id="objectDetails"></div>
+              </div>
+            </section>
+
+            <div class="detail-grid">
+              <section class="field-group">
+                <h3>Style</h3>
+                <div class="mini-card">
+                  <p id="styleValue">Pending...</p>
+                </div>
+              </section>
+
+              <section class="field-group">
+                <h3>Medium</h3>
+                <div class="mini-card">
+                  <p id="mediumValue">Pending...</p>
+                </div>
+              </section>
+
+              <section class="field-group">
+                <h3>Color Palette</h3>
+                <div class="mini-card">
+                  <p id="paletteValue">Pending...</p>
+                </div>
+              </section>
+
+              <section class="field-group">
+                <h3>Emotion</h3>
+                <div class="mini-card">
+                  <p id="emotionValue">Pending...</p>
+                </div>
+              </section>
+
+              <section class="field-group">
+                <h3>Lighting</h3>
+                <div class="mini-card">
+                  <p id="lightingValue">Pending...</p>
+                </div>
+              </section>
+            </div>
+
+            <section class="field-group wide">
+              <h3>Composition</h3>
+              <div class="content-card">
+                <div class="summary-list" id="compositionDetails"></div>
+              </div>
+            </section>
+          </div>
+        </aside>
+      </section>
+
+      <section class="right-column" aria-label="Generated image and evaluation">
+        <aside class="image-panel" aria-labelledby="generatedImageTitle">
+          <h2 id="generatedImageTitle">Generated Image</h2>
+          <section class="final-output" id="finalOutput" hidden>
+            <img id="generatedImage" alt="" />
+          </section>
+        </aside>
+
+        <aside class="score-panel" aria-labelledby="scoreTitle">
+          <h2 id="scoreTitle">Image Aesthetic Score</h2>
+          <section class="content-card score-card">
+            <strong id="aestheticScore">Pending</strong>
+          </section>
+        </aside>
+      </section>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

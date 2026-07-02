@@ -358,25 +358,28 @@ Return strict JSON with exactly:
         return bool(self.state.object_contributions or self.state.style or self.state.medium)
 
     def _generate_preview_if_ready(self) -> None:
-        if self._has_visual_seed():
-            try:
-                self.generate_painting()
-            except Exception as exc:
-                self.last_error = str(exc)
+        # Do not auto-generate images during chat turns.
+        # Image generation should happen only when the user clicks Generate.
+        return
 
     def generate_painting(self):
         if self.client is None:
             raise RuntimeError("Azure OpenAI client is not configured. Check your .env file.")
 
         final_prompt = self._build_image_prompt()
+        # Azure GPT-image-1 / GPT-image-1.5 always returns base64 image data.
+        # Do NOT pass response_format; Azure rejects it for GPT-image models.
         image_res = self.client.images.generate(
             model=self.image_model,
             prompt=final_prompt,
             n=1,
             size=os.environ.get("CANVASIA_IMAGE_SIZE", "1024x1024"),
-            response_format="b64_json",
+            quality=os.environ.get("CANVASIA_IMAGE_QUALITY", "high"),
         )
+
         img_b64 = image_res.data[0].b64_json
+        if not img_b64:
+            raise RuntimeError("Azure image generation returned no base64 image data.")
         img_data = base64.b64decode(img_b64)
 
         logs_dir = Path("logs")

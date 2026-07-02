@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlparse
 from backend import ArtistBackend
 
 
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"
 PORT = 8000
 PUBLIC_FILES = {
     "/": "index.html",

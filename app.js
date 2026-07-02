@@ -1,12 +1,41 @@
+// Build API URLs that work both locally and behind workspace proxies like:
+// /dev-workspaces/<workspace>/proxy/8000
+function getBasePath() {
+  let path = window.location.pathname;
+
+  if (path.endsWith("/index.html")) {
+    path = path.slice(0, -"/index.html".length);
+  }
+
+  if (path.endsWith("/")) {
+    path = path.slice(0, -1);
+  }
+
+  return path;
+}
+
+const BASE_PATH = getBasePath();
+
+function withBase(route) {
+  const cleanRoute = route.startsWith("/") ? route : `/${route}`;
+  return `${BASE_PATH}${cleanRoute}` || cleanRoute;
+}
+
 const API = {
-  state: "/api/state",
-  start: "/api/start",
-  reset: "/api/reset",
-  turn: "/api/turn",
-  generate: "/api/generate",
-  edit: "/api/edit-image",
-  sketch: "/api/sketch",
+  state: withBase("/api/state"),
+  start: withBase("/api/start"),
+  reset: withBase("/api/reset"),
+  turn: withBase("/api/turn"),
+  generate: withBase("/api/generate"),
+  edit: withBase("/api/edit-image"),
+  sketch: withBase("/api/sketch"),
 };
+
+function resourceUrl(path) {
+  if (!path) return null;
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  return withBase(path);
+}
 
 const ui = {
   startButton: document.querySelector("#startButton"),
@@ -155,6 +184,20 @@ async function apiRequest(url, options = {}) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!contentType.includes("application/json")) {
+    const text = await response.text();
+    const preview = text.slice(0, 120).replace(/\s+/g, " ");
+
+    throw new Error(
+      `Expected JSON but received HTML/text from ${url}. ` +
+      `This usually means the request missed the proxy base path. ` +
+      `Response preview: ${preview}`
+    );
+  }
+
   const payload = await response.json();
 
   if (!response.ok) {
@@ -267,7 +310,7 @@ function renderFinalOutput() {
   }
 
   ui.finalOutput.hidden = false;
-  ui.generatedImage.src = `${state.generatedImage}?t=${Date.now()}`;
+  ui.generatedImage.src = `${resourceUrl(state.generatedImage)}?t=${Date.now()}`;
 }
 
 function render() {

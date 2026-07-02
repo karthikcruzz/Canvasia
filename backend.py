@@ -121,6 +121,17 @@ class ArtistBackend:
 
     def process_turn(self, user_message: str):
         self.conversation_history.append({"role": "user", "content": user_message})
+
+        # Generate only when the user naturally asks/agrees to generate in chat.
+        # This can happen at any stage of the chat, not only after "Ready".
+        # The decision is made by GPT using the recent conversation context,
+        # not by keyword matching.
+        if self._user_wants_generation(user_message):
+            reply = "Great — I'll generate the **image** now."
+            self.conversation_history.append({"role": "assistant", "content": reply})
+            self.generate_painting()
+            return reply
+
         parsed = self._ask_canvasia()
         reply = self._handle_canvasia_response(parsed)
         self._generate_preview_if_ready()
@@ -144,6 +155,61 @@ class ArtistBackend:
             self.last_error = str(exc)
             return self._fallback_response()
 
+    def _user_wants_generation(self, user_message: str) -> bool:
+        """
+        Use GPT to decide whether the user's latest message means:
+        yes, generate the final image now.
+
+        This is intentionally not keyword matching. The model reads the recent
+        chat context and decides whether the user is giving consent to generate.
+        """
+        if self.client is None or not self._has_visual_seed():
+            return False
+
+        recent_messages = self.conversation_history[-6:]
+
+        prompt = f"""
+You are a classifier.
+
+Task:
+Decide whether the user's latest message is explicit agreement, consent,
+or a direct request to generate the final image NOW.
+
+Important:
+- Use the recent conversation context.
+- The user may say yes, go ahead, generate it, let's do it, looks good, that's enough, make it, create the image, or similar.
+- The user may also decline, hesitate, ask questions, or continue discussing.
+- Return true only when the user clearly wants image generation now.
+- Return strict JSON only.
+
+Conversation context:
+{json.dumps(recent_messages, ensure_ascii=False)}
+
+Latest user message:
+{user_message}
+
+Return exactly:
+{{"generate_now": true}}
+or
+{{"generate_now": false}}
+"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.text_model,
+                messages=[
+                    {"role": "system", "content": "Return only valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+            )
+            parsed = json.loads(response.choices[0].message.content)
+            return bool(parsed.get("generate_now"))
+        except Exception as exc:
+            self.last_error = str(exc)
+            return False
+
+
     def _build_system_prompt(self, extra_instruction: str | None = None) -> str:
         object_order = OBJECT_ORDER.get(self.state.starter or "Human", OBJECT_ORDER["Human"])
         next_contributor = self._next_object_contributor(object_order)
@@ -159,6 +225,7 @@ Tone and guardrails:
 - Ask only one question at a time.
 - If the user is unsure, offer two or three concrete art directions and help them choose.
 - If the user drifts away from the artwork, briefly acknowledge and guide them back to the painting.
+- If the artwork is complete and the conversation reaches the ready stage, ask whether you should generate the final image now.
 - Do not mention internal stages, rules, schemas, JSON, or extraction.
 - Do not use keyword matching language or robotic if/then phrasing.
 - Use **bold** only for important visual choices.

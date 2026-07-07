@@ -64,7 +64,8 @@ def serialize_state() -> dict:
         },
         "generatedImage": image_url(backend.generated_image_path),
         "finalPrompt": backend.final_prompt,
-        "aestheticScore": None,
+        "aestheticScore": backend.aesthetic_score_average,
+        "aestheticScores": backend.aesthetic_scores,
         "lastError": backend.last_error,
     }
 

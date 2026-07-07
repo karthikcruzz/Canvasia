@@ -52,6 +52,22 @@ DECISION_FALLBACKS = {
     ],
 }
 
+AESTHETIC_CRITERIA = [
+    "Color Harmony",
+    "Visual Style Consistency",
+    "Sharpness",
+    "Light and Shadow Modeling",
+    "Creativity and Originality",
+    "Exposure Control",
+    "Application of Classical Composition Principles",
+    "Depth of Field and Layering",
+    "Visual Center Stability",
+    "Visual Flow Guidance",
+    "Structural Support Stability",
+    "Appropriateness of Negative Space",
+    "Subject Integrity",
+]
+
 
 def load_dotenv(path: str = ".env") -> None:
     env_path = Path(path)
@@ -89,6 +105,11 @@ class ArtistBackend:
         load_dotenv()
         self.client = self._create_client()
         self.text_model = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.2")
+        self.evaluation_model = (
+            os.environ.get("AZURE_OPENAI_EVALUATION_DEPLOYMENT_NAME")
+            or os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT_NAME")
+            or self.text_model
+        )
         self.image_model = os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT_NAME", "gpt-image-1.5")
         self.creative_temperature = float(os.environ.get("CANVASIA_CREATIVE_TEMPERATURE", "1.3"))
         self.prompt_temperature = float(os.environ.get("CANVASIA_PROMPT_TEMPERATURE", "1.1"))
@@ -96,6 +117,8 @@ class ArtistBackend:
         self.conversation_history: list[dict[str, str]] = []
         self.generated_image_path: str | None = None
         self.final_prompt: str | None = None
+        self.aesthetic_scores: dict[str, float] = {}
+        self.aesthetic_score_average: float | None = None
         self.last_error: str | None = None
         self.update_live_prompt()
 
@@ -114,8 +137,10 @@ class ArtistBackend:
             azure_endpoint=endpoint,
         )
 
-    def _chat_completion(self, *, messages: list[dict[str, str]], response_format=None, temperature=None):
-        kwargs = {"model": self.text_model, "messages": messages}
+    def _chat_completion(
+        self, *, messages: list[dict[str, Any]], response_format=None, temperature=None, model: str | None = None
+    ):
+        kwargs = {"model": model or self.text_model, "messages": messages}
         if response_format is not None:
             kwargs["response_format"] = response_format
         if temperature is not None:
@@ -135,6 +160,8 @@ class ArtistBackend:
         self.conversation_history = []
         self.generated_image_path = None
         self.final_prompt = None
+        self.aesthetic_scores = {}
+        self.aesthetic_score_average = None
         self.last_error = None
         self.update_live_prompt()
 
@@ -446,6 +473,13 @@ Layout: {self.state.layout}
 
         self.generated_image_path = str(img_path)
         self.final_prompt = final_prompt
+        self.aesthetic_scores = {}
+        self.aesthetic_score_average = None
+        try:
+            self._evaluate_aesthetic_score(img_b64)
+        except Exception as exc:
+            message = f"Aesthetic scoring failed: {exc}"
+            self.last_error = f"{self.last_error}; {message}" if self.last_error else message
         self._write_log(timestamp)
         return self.generated_image_path, self.final_prompt
 
@@ -472,6 +506,92 @@ Layout: {self.state.layout}
             self.last_error = str(exc)
             return self.state.live_prompt
 
+    def _evaluate_aesthetic_score(self, img_b64: str):
+        criteria_lines = "\n".join(
+            f"{index}. {criterion}" for index, criterion in enumerate(AESTHETIC_CRITERIA, start=1)
+        )
+        prompt = (
+            "Evaluate the generated artwork image against exactly these 13 aesthetic criteria. "
+            "Assign each criterion a numeric score from 0 to 10, where 0 is poor and 10 is excellent. "
+            "Use the full 0-10 range when justified. Return only valid JSON in this exact shape: "
+            '{"scores":[{"criterion":"Color Harmony","score":7.5}]}. '
+            "Do not add markdown, prose, or extra keys.\n\n"
+            f"Criteria:\n{criteria_lines}"
+        )
+        response = self._chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict visual art evaluator. Score only what is visible in the image, "
+                        "and produce machine-readable JSON."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    ],
+                },
+            ],
+            response_format={"type": "json_object"},
+            temperature=0,
+            model=self.evaluation_model,
+        )
+        raw_content = response.choices[0].message.content or "{}"
+        data = self._parse_json_object(raw_content)
+        normalized_scores = self._normalize_aesthetic_scores(data)
+
+        self.aesthetic_scores = normalized_scores
+        self.aesthetic_score_average = round(sum(normalized_scores.values()) / len(AESTHETIC_CRITERIA), 2)
+
+    def _parse_json_object(self, raw_content: str) -> dict[str, Any]:
+        content = raw_content.strip()
+        if content.startswith("```"):
+            content = content.strip("`").strip()
+            if content.lower().startswith("json"):
+                content = content[4:].strip()
+        return json.loads(content)
+
+    def _normalize_aesthetic_scores(self, data: dict[str, Any]) -> dict[str, float]:
+        scores_data = data.get("scores", data)
+        score_lookup: dict[str, Any] = {}
+
+        if isinstance(scores_data, list):
+            for item in scores_data:
+                if not isinstance(item, dict):
+                    continue
+                criterion = item.get("criterion")
+                if criterion is not None and "score" in item:
+                    score_lookup[self._aesthetic_score_key(str(criterion))] = item["score"]
+        elif isinstance(scores_data, dict):
+            score_lookup = {self._aesthetic_score_key(str(key)): value for key, value in scores_data.items()}
+
+        normalized: dict[str, float] = {}
+        missing = []
+        for criterion in AESTHETIC_CRITERIA:
+            value = score_lookup.get(self._aesthetic_score_key(criterion))
+            if value is None:
+                missing.append(criterion)
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                missing.append(criterion)
+                continue
+            normalized[criterion] = max(0.0, min(10.0, numeric))
+
+        if missing:
+            raise ValueError(f"Missing or invalid aesthetic scores for: {', '.join(missing)}")
+        return normalized
+
+    def _aesthetic_score_key(self, criterion: str) -> str:
+        parts = criterion.lower().replace("#", " ").replace(".", " ").split()
+        if parts and parts[0].isdigit():
+            parts = parts[1:]
+        return " ".join(parts)
+
     def _write_log(self, timestamp: str):
         log_data = {
             "timestamp": timestamp,
@@ -479,6 +599,8 @@ Layout: {self.state.layout}
             "state": asdict(self.state),
             "final_prompt": self.final_prompt,
             "image_path": self.generated_image_path,
+            "aesthetic_scores": self.aesthetic_scores,
+            "aesthetic_score_average": self.aesthetic_score_average,
         }
         Path("logs", f"log_{timestamp}.json").write_text(
             json.dumps(log_data, indent=2, ensure_ascii=False),

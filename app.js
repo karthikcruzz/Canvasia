@@ -69,6 +69,7 @@ let state = {
   conversationHistory: [],
   summary: {},
   aestheticScore: null,
+  aestheticScores: null,
 };
 
 function escapeHtml(value) {
@@ -131,6 +132,7 @@ function normalizeApiState(payload) {
       backendState.aesthetic_score ??
       backendState.image_aesthetic_score ??
       null,
+    aestheticScores: payload.aestheticScores || payload.aesthetic_scores || null,
   };
 }
 

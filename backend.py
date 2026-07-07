@@ -1,7 +1,6 @@
 import base64
 import json
 import os
-import random
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -18,38 +17,6 @@ STAGES = ["Objects", "Style", "Medium", "Color", "Layout", "Ready"]
 OBJECT_ORDER = {
     "AI": ["canvasia", "human", "canvasia", "human", "canvasia", "human"],
     "Human": ["human", "canvasia", "human", "canvasia", "human", "canvasia"],
-}
-
-OBJECT_POOL = [
-    "clockwork pomegranate",
-    "velvet telescope",
-    "ceramic rain boot",
-    "brass jellyfish",
-    "folded paper dragon",
-    "neon teacup",
-    "cracked porcelain mask",
-    "floating seed pod",
-    "embroidered compass",
-    "crystal cassette tape",
-    "moonlit greenhouse",
-    "silver accordion",
-    "glass octopus",
-    "paper windmill",
-    "striped umbrella",
-    "copper violin",
-    "marble suitcase",
-    "glowing chess knight",
-]
-
-DECISION_FALLBACKS = {
-    "Style": ["surreal realism", "loose watercolor", "dreamlike impressionism", "graphic folk art"],
-    "Medium": ["oil on canvas", "ink and watercolor", "gouache on textured paper", "mixed-media collage"],
-    "Color": ["deep teal, ember orange, pearl white", "muted violet, moss green, warm gold", "cobalt blue, blush pink, charcoal"],
-    "Layout": [
-        "a diagonal arrangement with the largest objects anchoring the lower left and smaller objects drifting upward",
-        "a calm central cluster surrounded by smaller objects like orbiting thoughts",
-        "a layered scene with the most familiar objects close to the viewer and surreal objects farther back",
-    ],
 }
 
 AESTHETIC_CRITERIA = [
@@ -295,7 +262,7 @@ class ArtistBackend:
     def _generate_canvasia_object(self):
         existing = {item["value"].lower() for item in self.state.object_contributions}
         if self.client is None:
-            return self._random_object(existing)
+            raise RuntimeError("Azure OpenAI client is not configured, so Canvasia cannot invent an object.")
 
         prompt = f"""
 Invent one concrete visual object for a yes-and painting game.
@@ -311,7 +278,13 @@ Rules:
         try:
             response = self._chat_completion(
                 messages=[
-                    {"role": "system", "content": "Return only valid JSON."},
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are Canvasia, an imaginative art collaborator. "
+                            "Invent a fresh object in the moment. Return only valid JSON."
+                        ),
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 response_format={"type": "json_object"},
@@ -323,15 +296,11 @@ Rules:
                 return self._strip_yes_and(value)
         except Exception as exc:
             self.last_error = str(exc)
-        return self._random_object(existing)
-
-    def _random_object(self, existing: set[str]):
-        choices = [item for item in OBJECT_POOL if item.lower() not in existing]
-        return random.choice(choices or OBJECT_POOL)
+        raise RuntimeError("Canvasia could not invent a fresh object from the model response.")
 
     def _decide_stage_value(self, stage: str):
         if self.client is None:
-            return random.choice(DECISION_FALLBACKS[stage])
+            raise RuntimeError(f"Azure OpenAI client is not configured, so Canvasia cannot decide the {stage.lower()}.")
 
         prompt = f"""
 Choose the {stage.lower()} for this collaborative painting.
@@ -359,10 +328,12 @@ Rules:
             )
             parsed = json.loads(response.choices[0].message.content)
             value = str(parsed.get("value", "")).strip()
-            return value or random.choice(DECISION_FALLBACKS[stage])
+            if value:
+                return value
+            raise ValueError(f"Canvasia returned an empty {stage.lower()} choice.")
         except Exception as exc:
             self.last_error = str(exc)
-            return random.choice(DECISION_FALLBACKS[stage])
+            raise RuntimeError(f"Canvasia could not decide the {stage.lower()} from the model response.")
 
     def _set_stage_value(self, stage: str, value: str):
         clean_value = str(value or "").strip()

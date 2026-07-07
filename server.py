@@ -140,9 +140,9 @@ class CanvasiaHandler(BaseHTTPRequestHandler):
         write_json(self, 200, serialize_state())
 
     def generate(self):
-        # The Generate Image button is intentionally available throughout the chat.
-        # It generates from the current live prompt/state, even if the structured
-        # conversation has not reached the final Ready stage yet.
+        if backend.state.stage != "Ready":
+            write_json(self, 400, {"error": "Generate Image is available after Canvasia says the prompt is ready.", **serialize_state()})
+            return
         backend.generate_painting()
         write_json(self, 200, serialize_state())
 

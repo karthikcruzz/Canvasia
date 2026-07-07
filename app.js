@@ -209,6 +209,8 @@ function setBusy(nextBusy) {
 }
 
 function syncButtons() {
+  const canGenerate = state.chatStarted && state.stage === "Ready";
+
   ui.starterButtons.forEach((button) => {
     const active = button.dataset.starter === selectedStarterValue;
     button.classList.toggle("active", active);
@@ -217,7 +219,7 @@ function syncButtons() {
 
   ui.startButton.disabled = busy || !selectedStarterValue;
   ui.resetButton.disabled = busy;
-  ui.generateButton.disabled = busy || !state.chatStarted;
+  ui.generateButton.disabled = busy || !canGenerate;
   ui.sketchButton.disabled = busy || !state.chatStarted;
   ui.editImageButton.disabled = busy || !state.generatedImage;
 }

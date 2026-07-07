@@ -8,7 +8,7 @@ from backend import ArtistBackend
 
 
 HOST = "0.0.0.0"
-PORT = 8000
+PORT = 8001
 PUBLIC_FILES = {
     "/": "index.html",
     "/index.html": "index.html",
@@ -58,8 +58,7 @@ def serialize_state() -> dict:
             "style": state["style"],
             "medium": state["medium"],
             "colorPalette": state["color_palette"],
-            "emotion": state["emotion"],
-            "lighting": state["lighting"],
+            "layout": state["layout"],
             "composition": state["composition"],
             "livePrompt": state["live_prompt"],
         },
@@ -99,6 +98,9 @@ class CanvasiaHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/turn":
                 self.turn()
                 return
+            if parsed.path == "/api/decide":
+                self.decide()
+                return
             if parsed.path == "/api/generate":
                 self.generate()
                 return
@@ -130,6 +132,10 @@ class CanvasiaHandler(BaseHTTPRequestHandler):
             write_json(self, 400, {"error": "Message cannot be empty"})
             return
         backend.process_turn(message)
+        write_json(self, 200, serialize_state())
+
+    def decide(self):
+        backend.canvasia_decides()
         write_json(self, 200, serialize_state())
 
     def generate(self):

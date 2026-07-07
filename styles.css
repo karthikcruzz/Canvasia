@@ -327,6 +327,17 @@ h2 {
   font-weight: 900;
 }
 
+.suggestion-button {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 8px;
+  border: 1px solid rgba(110, 231, 249, 0.45);
+  border-radius: 12px;
+  background: rgba(19, 44, 59, 0.78);
+  color: var(--accent-2);
+  font-weight: 900;
+}
+
 .creative-actions {
   display: grid;
   grid-template-columns: 1fr 1.1fr 1.2fr;

@@ -26,6 +26,7 @@ const API = {
   start: withBase("/api/start"),
   reset: withBase("/api/reset"),
   turn: withBase("/api/turn"),
+  decide: withBase("/api/decide"),
   generate: withBase("/api/generate"),
   edit: withBase("/api/edit-image"),
   sketch: withBase("/api/sketch"),
@@ -51,9 +52,7 @@ const ui = {
   styleValue: document.querySelector("#styleValue"),
   mediumValue: document.querySelector("#mediumValue"),
   paletteValue: document.querySelector("#paletteValue"),
-  emotionValue: document.querySelector("#emotionValue"),
-  lightingValue: document.querySelector("#lightingValue"),
-  compositionDetails: document.querySelector("#compositionDetails"),
+  layoutValue: document.querySelector("#layoutValue"),
   livePrompt: document.querySelector("#livePrompt"),
   finalOutput: document.querySelector("#finalOutput"),
   generatedImage: document.querySelector("#generatedImage"),
@@ -105,20 +104,12 @@ function normalizeMessage(message) {
 }
 
 function buildSummaryFromBackendState(backendState) {
-  const composition = backendState.composition || {};
-
   return {
     objects: backendState.finalized_objects || backendState.objects || backendState.selected_objects || {},
     style: backendState.style,
     medium: backendState.medium,
     colorPalette: backendState.color_palette || backendState.colorPalette,
-    emotion: backendState.emotion,
-    lighting: backendState.lighting,
-    composition: {
-      foreground: composition.foreground,
-      midground: composition.midground,
-      background: composition.background,
-    },
+    layout: backendState.layout,
     livePrompt: backendState.live_prompt || "",
   };
 }
@@ -249,14 +240,23 @@ function renderMessages() {
 
 function renderConversationInput() {
   const disabled = state.chatStarted ? "" : "disabled";
+  const canCanvasiaDecide = state.chatStarted && ["Style", "Medium", "Color", "Layout"].includes(state.stage);
+  const decideMarkup = canCanvasiaDecide
+    ? '<button class="suggestion-button" id="decideButton" type="button">Canvasia decides</button>'
+    : "";
 
   ui.conversationInput.innerHTML = `
     <form class="chat-form" id="chatForm">
       <input class="chat-input" id="chatInput" autocomplete="off" placeholder="Enter your chat message..." ${disabled} />
       <button class="send-button" type="submit" aria-label="Send message" ${disabled}>Send</button>
-    </form>`;
+    </form>
+    ${decideMarkup}`;
 
   document.querySelector("#chatForm").addEventListener("submit", submitTurn);
+  const decideButton = document.querySelector("#decideButton");
+  if (decideButton) {
+    decideButton.addEventListener("click", canvasiaDecides);
+  }
   if (state.chatStarted) {
     document.querySelector("#chatInput").focus();
   }
@@ -272,7 +272,6 @@ function summaryLine(label, value) {
 
 function renderSummary() {
   const summary = state.summary || {};
-  const composition = summary.composition || {};
   const rows = contributionRows(summary.objects);
 
   ui.objectDetails.innerHTML = rows.length
@@ -282,13 +281,7 @@ function renderSummary() {
   ui.styleValue.textContent = pending(summary.style);
   ui.mediumValue.textContent = pending(summary.medium);
   ui.paletteValue.textContent = pending(summary.colorPalette);
-  ui.emotionValue.textContent = pending(summary.emotion);
-  ui.lightingValue.textContent = pending(summary.lighting);
-
-  ui.compositionDetails.innerHTML = `
-    ${summaryLine("Foreground", composition.foreground)}
-    ${summaryLine("Midground", composition.midground)}
-    ${summaryLine("Background", composition.background)}`;
+  ui.layoutValue.textContent = pending(summary.layout);
 
   ui.livePrompt.textContent = summary.livePrompt || "Pending...";
 }
@@ -348,6 +341,11 @@ async function startConversation(starter = selectedStarterValue) {
   }
 }
 
+function selectStarter(starter) {
+  selectedStarterValue = starter;
+  syncButtons();
+}
+
 async function resetConversation() {
   try {
     setBusy(true);
@@ -401,6 +399,21 @@ async function generatePainting() {
   }
 }
 
+async function canvasiaDecides() {
+  try {
+    setBusy(true);
+    state = await apiRequest(API.decide, {
+      method: "POST",
+      body: "{}",
+    });
+    render();
+  } catch (error) {
+    window.alert(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function callOptionalAction(url, label) {
   try {
     setBusy(true);
@@ -417,7 +430,7 @@ async function callOptionalAction(url, label) {
 }
 
 ui.starterButtons.forEach((button) => {
-  button.addEventListener("click", () => startConversation(button.dataset.starter));
+  button.addEventListener("click", () => selectStarter(button.dataset.starter));
 });
 ui.startButton.addEventListener("click", () => startConversation(selectedStarterValue));
 ui.resetButton.addEventListener("click", resetConversation);

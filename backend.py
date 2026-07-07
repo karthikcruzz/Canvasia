@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import random
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -8,24 +9,47 @@ from typing import Any
 
 try:
     from openai import AzureOpenAI
-except ImportError:  # Keeps the app importable before dependencies are installed.
+except ImportError:
     AzureOpenAI = None
 
 
-STAGES = [
-    "Objects",
-    "Style",
-    "Medium",
-    "Color Palette",
-    "Emotion",
-    "Lighting",
-    "Composition",
-    "Ready",
-]
+STAGES = ["Objects", "Style", "Medium", "Color", "Layout", "Ready"]
 
 OBJECT_ORDER = {
-    "AI": ["canvasia", "human", "canvasia", "human"],
-    "Human": ["human", "canvasia", "human", "canvasia"],
+    "AI": ["canvasia", "human", "canvasia", "human", "canvasia", "human"],
+    "Human": ["human", "canvasia", "human", "canvasia", "human", "canvasia"],
+}
+
+OBJECT_POOL = [
+    "clockwork pomegranate",
+    "velvet telescope",
+    "ceramic rain boot",
+    "brass jellyfish",
+    "folded paper dragon",
+    "neon teacup",
+    "cracked porcelain mask",
+    "floating seed pod",
+    "embroidered compass",
+    "crystal cassette tape",
+    "moonlit greenhouse",
+    "silver accordion",
+    "glass octopus",
+    "paper windmill",
+    "striped umbrella",
+    "copper violin",
+    "marble suitcase",
+    "glowing chess knight",
+]
+
+DECISION_FALLBACKS = {
+    "Style": ["surreal realism", "loose watercolor", "dreamlike impressionism", "graphic folk art"],
+    "Medium": ["oil on canvas", "ink and watercolor", "gouache on textured paper", "mixed-media collage"],
+    "Color": ["deep teal, ember orange, pearl white", "muted violet, moss green, warm gold", "cobalt blue, blush pink, charcoal"],
+    "Layout": [
+        "a diagonal arrangement with the largest objects anchoring the lower left and smaller objects drifting upward",
+        "a calm central cluster surrounded by smaller objects like orbiting thoughts",
+        "a layered scene with the most familiar objects close to the viewer and surreal objects farther back",
+    ],
 }
 
 
@@ -53,8 +77,7 @@ class PaintingState:
     style: str | None = None
     medium: str | None = None
     color_palette: str | None = None
-    emotion: str | None = None
-    lighting: str | None = None
+    layout: str | None = None
     composition: dict[str, list[str]] = field(
         default_factory=lambda: {"foreground": [], "midground": [], "background": []}
     )
@@ -67,6 +90,8 @@ class ArtistBackend:
         self.client = self._create_client()
         self.text_model = os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-5.2")
         self.image_model = os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT_NAME", "gpt-image-1.5")
+        self.creative_temperature = float(os.environ.get("CANVASIA_CREATIVE_TEMPERATURE", "1.3"))
+        self.prompt_temperature = float(os.environ.get("CANVASIA_PROMPT_TEMPERATURE", "1.1"))
         self.state = PaintingState()
         self.conversation_history: list[dict[str, str]] = []
         self.generated_image_path: str | None = None
@@ -89,6 +114,22 @@ class ArtistBackend:
             azure_endpoint=endpoint,
         )
 
+    def _chat_completion(self, *, messages: list[dict[str, str]], response_format=None, temperature=None):
+        kwargs = {"model": self.text_model, "messages": messages}
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        try:
+            return self.client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            if temperature is None or "temperature" not in str(exc).lower():
+                raise
+            kwargs.pop("temperature", None)
+            self.last_error = f"Temperature unsupported by deployment; retried without it. Original error: {exc}"
+            return self.client.chat.completions.create(**kwargs)
+
     def reset(self):
         self.state = PaintingState()
         self.conversation_history = []
@@ -102,287 +143,258 @@ class ArtistBackend:
         self.state.starter = starter if starter in OBJECT_ORDER else "Human"
 
         if self.state.starter == "AI":
-            parsed = self._ask_canvasia(
-                extra_instruction=(
-                    "Canvasia is starting. Add exactly one vivid object as Canvasia's first idea, "
-                    "then ask the human for their first object."
-                )
+            canvasia_object = self._generate_canvasia_object()
+            self._add_object("canvasia", canvasia_object)
+            self.conversation_history.append({"role": "assistant", "content": canvasia_object})
+        else:
+            reply = (
+                "Let's start with one concrete object from you. Pick anything visual, familiar or strange, "
+                "and I'll build from it."
             )
-            self._handle_canvasia_response(parsed)
-            self._generate_preview_if_ready()
-            return self.conversation_history[-1]["content"] if self.conversation_history else ""
+            self.conversation_history.append({"role": "assistant", "content": reply})
 
-        reply = (
-            "Let's start with one concrete object from you. Pick anything visual, familiar or strange, "
-            "and I'll build from it."
-        )
+        self.update_live_prompt()
+        return self.conversation_history[-1]["content"] if self.conversation_history else ""
+
+    def process_turn(self, user_message: str):
+        clean_message = str(user_message or "").strip()
+        if not clean_message:
+            return ""
+
+        if self.state.stage == "Objects":
+            return self._process_object_turn(clean_message)
+
+        if self.state.stage in {"Style", "Medium", "Color", "Layout"}:
+            return self._process_choice_turn(clean_message)
+
+        reply = "The prompt is ready - click **Generate Image** when you're ready."
+        self.conversation_history.append({"role": "user", "content": clean_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
         return reply
 
-    def process_turn(self, user_message: str):
-        self.conversation_history.append({"role": "user", "content": user_message})
+    def canvasia_decides(self):
+        if self.state.stage not in {"Style", "Medium", "Color", "Layout"}:
+            return ""
 
-        # Generate only when the user naturally asks/agrees to generate in chat.
-        # This can happen at any stage of the chat, not only after "Ready".
-        # The decision is made by GPT using the recent conversation context,
-        # not by keyword matching.
-        if self._user_wants_generation(user_message):
-            reply = "Great — I'll generate the **image** now."
-            self.conversation_history.append({"role": "assistant", "content": reply})
-            self.generate_painting()
-            return reply
-
-        parsed = self._ask_canvasia()
-        reply = self._handle_canvasia_response(parsed)
-        self._generate_preview_if_ready()
+        stage = self.state.stage
+        value = self._decide_stage_value(stage)
+        self._set_stage_value(stage, value)
+        self._derive_stage()
+        self._infer_composition_from_layout()
+        self.update_live_prompt()
+        reply = self._choice_reply(stage, value, decided_by_canvasia=True)
+        self.conversation_history.append({"role": "assistant", "content": reply})
         return reply
 
-    def _ask_canvasia(self, extra_instruction: str | None = None) -> dict[str, Any]:
+    def _process_object_turn(self, user_message: str):
+        display_message = self._yes_and_user_message(user_message)
+        human_object = self._strip_yes_and(user_message)
+        self.conversation_history.append({"role": "user", "content": display_message})
+
+        self._add_object("human", human_object)
+
+        if len(self.state.object_contributions) < 6 and self._next_object_contributor() == "canvasia":
+            canvasia_object = self._generate_canvasia_object()
+            self._add_object("canvasia", canvasia_object)
+            self.conversation_history.append({"role": "assistant", "content": f"yes and {canvasia_object}"})
+
+        if len(self.state.object_contributions) >= 6:
+            self._derive_stage()
+            self.update_live_prompt()
+            self.conversation_history.append({"role": "assistant", "content": "What style should guide the artwork?"})
+        else:
+            self.update_live_prompt()
+
+        return self.conversation_history[-1]["content"]
+
+    def _process_choice_turn(self, user_message: str):
+        stage = self.state.stage
+        self.conversation_history.append({"role": "user", "content": user_message})
+        self._set_stage_value(stage, user_message)
+        self._derive_stage()
+        self._infer_composition_from_layout()
+        self.update_live_prompt()
+        reply = self._choice_reply(stage, user_message, decided_by_canvasia=False)
+        self.conversation_history.append({"role": "assistant", "content": reply})
+        return reply
+
+    def _choice_reply(self, stage: str, value: str, decided_by_canvasia: bool):
+        prefix = "I'll choose" if decided_by_canvasia else "Got it"
+        if stage == "Style":
+            return f"{prefix}: **{value}**. What medium should carry it?"
+        if stage == "Medium":
+            return f"{prefix}: **{value}**. What color palette should shape it?"
+        if stage == "Color":
+            return f"{prefix}: **{value}**. Describe the layout in one go."
+        return f"{prefix}: **{value}**. The prompt is ready - click **Generate Image** when you're ready."
+
+    def _yes_and_user_message(self, user_message: str):
+        clean = self._strip_yes_and(user_message)
+        if self.state.object_contributions:
+            return f"yes and {clean}"
+        return clean
+
+    def _strip_yes_and(self, value: str):
+        text = str(value or "").strip()
+        lowered = text.lower()
+        for prefix in ("yes and ", "yes, and "):
+            if lowered.startswith(prefix):
+                return text[len(prefix):].strip()
+        return text
+
+    def _add_object(self, source: str, value: str):
+        if len(self.state.object_contributions) >= 6:
+            return
+        clean_value = self._strip_yes_and(value)
+        expected = self._next_object_contributor()
+        source = source if source in {"human", "canvasia"} else expected
+        if expected and source != expected:
+            source = expected
+        self.state.object_contributions.append({"source": source, "value": clean_value})
+        self.state.human_objects = [
+            item["value"] for item in self.state.object_contributions if item["source"] == "human"
+        ]
+        self.state.ai_objects = [
+            item["value"] for item in self.state.object_contributions if item["source"] == "canvasia"
+        ]
+
+    def _next_object_contributor(self):
+        order = OBJECT_ORDER.get(self.state.starter or "Human", OBJECT_ORDER["Human"])
+        count = len(self.state.object_contributions)
+        if count >= len(order):
+            return None
+        return order[count]
+
+    def _generate_canvasia_object(self):
+        existing = {item["value"].lower() for item in self.state.object_contributions}
         if self.client is None:
-            return self._fallback_response()
-
-        messages = [{"role": "system", "content": self._build_system_prompt(extra_instruction)}]
-        messages.extend(self.conversation_history[-12:])
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.text_model,
-                messages=messages,
-                response_format={"type": "json_object"},
-            )
-            return json.loads(response.choices[0].message.content)
-        except Exception as exc:
-            self.last_error = str(exc)
-            return self._fallback_response()
-
-    def _user_wants_generation(self, user_message: str) -> bool:
-        """
-        Use GPT to decide whether the user's latest message means:
-        yes, generate the final image now.
-
-        This is intentionally not keyword matching. The model reads the recent
-        chat context and decides whether the user is giving consent to generate.
-        """
-        if self.client is None or not self._has_visual_seed():
-            return False
-
-        recent_messages = self.conversation_history[-6:]
+            return self._random_object(existing)
 
         prompt = f"""
-You are a classifier.
+Invent one concrete visual object for a yes-and painting game.
+Return only JSON: {{"object": "short object noun phrase"}}
 
-Task:
-Decide whether the user's latest message is explicit agreement, consent,
-or a direct request to generate the final image NOW.
-
-Important:
-- Use the recent conversation context.
-- The user may say yes, go ahead, generate it, let's do it, looks good, that's enough, make it, create the image, or similar.
-- The user may also decline, hesitate, ask questions, or continue discussing.
-- Return true only when the user clearly wants image generation now.
-- Return strict JSON only.
-
-Conversation context:
-{json.dumps(recent_messages, ensure_ascii=False)}
-
-Latest user message:
-{user_message}
-
-Return exactly:
-{{"generate_now": true}}
-or
-{{"generate_now": false}}
+Rules:
+- One object only.
+- 1 to 4 words.
+- Fresh, visual, and paintable.
+- Do not use weathered lighthouse unless explicitly requested.
+- Avoid these existing objects: {sorted(existing)}
 """
-
         try:
-            response = self.client.chat.completions.create(
-                model=self.text_model,
+            response = self._chat_completion(
                 messages=[
                     {"role": "system", "content": "Return only valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
                 response_format={"type": "json_object"},
+                temperature=self.creative_temperature,
             )
             parsed = json.loads(response.choices[0].message.content)
-            return bool(parsed.get("generate_now"))
+            value = str(parsed.get("object", "")).strip()
+            if value and value.lower() not in existing:
+                return self._strip_yes_and(value)
         except Exception as exc:
             self.last_error = str(exc)
-            return False
+        return self._random_object(existing)
 
+    def _random_object(self, existing: set[str]):
+        choices = [item for item in OBJECT_POOL if item.lower() not in existing]
+        return random.choice(choices or OBJECT_POOL)
 
-    def _build_system_prompt(self, extra_instruction: str | None = None) -> str:
-        object_order = OBJECT_ORDER.get(self.state.starter or "Human", OBJECT_ORDER["Human"])
-        next_contributor = self._next_object_contributor(object_order)
-        state_json = json.dumps(asdict(self.state), ensure_ascii=False)
+    def _decide_stage_value(self, stage: str):
+        if self.client is None:
+            return random.choice(DECISION_FALLBACKS[stage])
 
-        base = f"""
-You are Canvasia, a warm AI artist brainstorming a painting with a human.
-Your job is to keep the conversation natural, focused on building one artwork, and gently useful.
+        prompt = f"""
+Choose the {stage.lower()} for this collaborative painting.
+Return only JSON: {{"value": "choice"}}
 
-Tone and guardrails:
-- Sound like a collaborative studio partner, not a form or checklist.
-- Keep replies to one or two short sentences.
-- Ask only one question at a time.
-- If the user is unsure, offer two or three concrete art directions and help them choose.
-- If the user drifts away from the artwork, briefly acknowledge and guide them back to the painting.
-- If the artwork is complete and the conversation reaches the ready stage, ask whether you should generate the final image now.
-- Do not mention internal stages, rules, schemas, JSON, or extraction.
-- Do not use keyword matching language or robotic if/then phrasing.
-- Use **bold** only for important visual choices.
-
-Object brainstorming flow:
-- Required object contribution order: {object_order}.
-- Current next object contributor: {next_contributor or "none"}.
-- For object turns, preserve the exact order of object_contributions.
-- If Canvasia is the next contributor, invent exactly one concrete visual object and add it.
-- If the human is the next contributor and they gave a usable object, add it.
-- If the human is the next contributor and they seem unsure, guide them without adding a fake human object.
-- After four total object contributions, move naturally into style, then medium, color palette, emotion, lighting, and composition.
+Current objects:
+{json.dumps(self.state.object_contributions, ensure_ascii=False)}
 
 Current state:
-{state_json}
+{json.dumps(asdict(self.state), ensure_ascii=False)}
 
-Return strict JSON with exactly:
-{{
-  "reply": "message to show the user",
-  "state": {{
-    "object_contributions": [{{"source": "human|canvasia", "value": "object name"}}],
-    "style": null|string,
-    "medium": null|string,
-    "color_palette": null|string,
-    "emotion": null|string,
-    "lighting": null|string,
-    "composition": {{"foreground": [], "midground": [], "background": []}}
-  }}
-}}
+Rules:
+- Be specific.
+- Keep it short enough to display in one UI box.
+- For Layout, write one concise sentence describing the full arrangement.
 """
-        if extra_instruction:
-            base += f"\nSpecial instruction for this turn: {extra_instruction}\n"
-        return base
+        try:
+            response = self._chat_completion(
+                messages=[
+                    {"role": "system", "content": "Return only valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=self.creative_temperature,
+            )
+            parsed = json.loads(response.choices[0].message.content)
+            value = str(parsed.get("value", "")).strip()
+            return value or random.choice(DECISION_FALLBACKS[stage])
+        except Exception as exc:
+            self.last_error = str(exc)
+            return random.choice(DECISION_FALLBACKS[stage])
 
-    def _fallback_response(self) -> dict[str, Any]:
-        object_order = OBJECT_ORDER.get(self.state.starter or "Human", OBJECT_ORDER["Human"])
-        next_contributor = self._next_object_contributor(object_order)
-        state = self._state_payload()
+    def _set_stage_value(self, stage: str, value: str):
+        clean_value = str(value or "").strip()
+        if stage == "Style":
+            self.state.style = clean_value
+        elif stage == "Medium":
+            self.state.medium = clean_value
+        elif stage == "Color":
+            self.state.color_palette = clean_value
+        elif stage == "Layout":
+            self.state.layout = clean_value
 
-        if next_contributor == "canvasia":
-            value = "glass lighthouse" if not self.state.object_contributions else "paper comet"
-            state["object_contributions"] = self.state.object_contributions + [
-                {"source": "canvasia", "value": value}
-            ]
-            reply = f"I'll add a **{value}** to the canvas. What object should you add next?"
-        elif next_contributor == "human":
-            reply = "Give me one concrete object for the painting; ordinary or surreal both work."
-        else:
-            reply = "Let's keep shaping the painting with one clear visual choice at a time."
-
-        return {"reply": reply, "state": state}
-
-    def _handle_canvasia_response(self, parsed: dict[str, Any]):
-        reply = str(parsed.get("reply") or "Let's keep shaping the painting together.")
-        state_update = parsed.get("state") or {}
-        self._apply_state_update(state_update)
-        self.update_live_prompt()
-        self.conversation_history.append({"role": "assistant", "content": reply})
-        return reply
-
-    def _apply_state_update(self, update: dict[str, Any]) -> None:
-        contributions = update.get("object_contributions")
-        if isinstance(contributions, list):
-            self.state.object_contributions = self._normalize_contributions(contributions)
-
-        self.state.human_objects = [
-            item["value"] for item in self.state.object_contributions if item["source"] == "human"
-        ][:2]
-        self.state.ai_objects = [
-            item["value"] for item in self.state.object_contributions if item["source"] == "canvasia"
-        ][:2]
-
-        for attr in ("style", "medium", "color_palette", "emotion", "lighting"):
-            value = update.get(attr)
-            if isinstance(value, str) and value.strip():
-                setattr(self.state, attr, value.strip())
-
-        composition = update.get("composition")
-        if isinstance(composition, dict):
-            self.state.composition = {
-                "foreground": self._string_list(composition.get("foreground")),
-                "midground": self._string_list(composition.get("midground")),
-                "background": self._string_list(composition.get("background")),
-            }
-
-        self._derive_stage()
-
-    def _normalize_contributions(self, contributions: list[Any]) -> list[dict[str, str]]:
-        normalized = []
-        required_order = OBJECT_ORDER.get(self.state.starter or "Human", OBJECT_ORDER["Human"])
-
-        for item in contributions:
-            if not isinstance(item, dict):
-                continue
-            source = str(item.get("source", "")).strip().lower()
-            if source in {"ai", "assistant", "bot"}:
-                source = "canvasia"
-            if source not in {"human", "canvasia"}:
-                continue
-            value = str(item.get("value", "")).strip()
-            if value:
-                normalized.append({"source": source, "value": value})
-
-        ordered = []
-        for index, expected_source in enumerate(required_order):
-            if index >= len(normalized):
-                break
-            item = normalized[index]
-            if item["source"] != expected_source:
-                item = {"source": expected_source, "value": item["value"]}
-            ordered.append(item)
-        return ordered[:4]
-
-    def _derive_stage(self) -> None:
-        if len(self.state.object_contributions) < 4:
+    def _derive_stage(self):
+        if len(self.state.object_contributions) < 6:
             self.state.stage = "Objects"
         elif not self.state.style:
             self.state.stage = "Style"
         elif not self.state.medium:
             self.state.stage = "Medium"
         elif not self.state.color_palette:
-            self.state.stage = "Color Palette"
-        elif not self.state.emotion:
-            self.state.stage = "Emotion"
-        elif not self.state.lighting:
-            self.state.stage = "Lighting"
-        elif not self._composition_complete():
-            self.state.stage = "Composition"
+            self.state.stage = "Color"
+        elif not self.state.layout:
+            self.state.stage = "Layout"
         else:
             self.state.stage = "Ready"
         self.state.progress = STAGES.index(self.state.stage)
 
-    def _composition_complete(self) -> bool:
-        placed = []
-        for values in self.state.composition.values():
-            placed.extend(values)
-        object_values = [item["value"] for item in self.state.object_contributions]
-        return bool(object_values) and all(value in placed for value in object_values)
+    def _infer_composition_from_layout(self):
+        if not self.state.layout or self.client is None:
+            return
 
-    def _next_object_contributor(self, object_order: list[str]) -> str | None:
-        count = len(self.state.object_contributions)
-        if count >= len(object_order):
-            return None
-        return object_order[count]
+        objects = [item["value"] for item in self.state.object_contributions]
+        prompt = f"""
+Infer foreground, midground, and background placement from this layout description.
+Do not ask the user anything.
+Return only JSON with keys foreground, midground, background, each a list of strings.
 
-    def _state_payload(self) -> dict[str, Any]:
-        return {
-            "object_contributions": self.state.object_contributions,
-            "style": self.state.style,
-            "medium": self.state.medium,
-            "color_palette": self.state.color_palette,
-            "emotion": self.state.emotion,
-            "lighting": self.state.lighting,
-            "composition": self.state.composition,
-        }
+Objects: {objects}
+Layout: {self.state.layout}
+"""
+        try:
+            response = self._chat_completion(
+                messages=[
+                    {"role": "system", "content": "Return only valid JSON."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.4,
+            )
+            parsed = json.loads(response.choices[0].message.content)
+            self.state.composition = {
+                "foreground": self._string_list(parsed.get("foreground")),
+                "midground": self._string_list(parsed.get("midground")),
+                "background": self._string_list(parsed.get("background")),
+            }
+        except Exception as exc:
+            self.last_error = str(exc)
 
-    def _string_list(self, value: Any) -> list[str]:
+    def _string_list(self, value: Any):
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]
@@ -398,44 +410,21 @@ Return strict JSON with exactly:
         else:
             parts.append("A painting")
 
-        comp = self.state.composition
-        if any(comp.values()):
-            composition_parts = []
-            if comp.get("foreground"):
-                composition_parts.append(f"{', '.join(comp['foreground'])} in the foreground")
-            if comp.get("midground"):
-                composition_parts.append(f"{', '.join(comp['midground'])} in the midground")
-            if comp.get("background"):
-                composition_parts.append(f"{', '.join(comp['background'])} in the background")
-            parts.append("depicting " + ", ".join(composition_parts))
-        elif self.state.object_contributions:
-            objects = [item["value"] for item in self.state.object_contributions]
+        objects = [item["value"] for item in self.state.object_contributions]
+        if objects:
             parts.append(f"featuring {', '.join(objects)}")
-
         if self.state.color_palette:
             parts.append(f"with a {self.state.color_palette} color palette")
-        if self.state.emotion:
-            parts.append(f"evoking {self.state.emotion}")
-        if self.state.lighting:
-            parts.append(f"under {self.state.lighting} lighting")
+        if self.state.layout:
+            parts.append(f"arranged as {self.state.layout}")
 
         self.state.live_prompt = " ".join(parts).strip() + "."
-
-    def _has_visual_seed(self) -> bool:
-        return bool(self.state.object_contributions or self.state.style or self.state.medium)
-
-    def _generate_preview_if_ready(self) -> None:
-        # Do not auto-generate images during chat turns.
-        # Image generation should happen only when the user clicks Generate.
-        return
 
     def generate_painting(self):
         if self.client is None:
             raise RuntimeError("Azure OpenAI client is not configured. Check your .env file.")
 
         final_prompt = self._build_image_prompt()
-        # Azure GPT-image-1 / GPT-image-1.5 always returns base64 image data.
-        # Do NOT pass response_format; Azure rejects it for GPT-image models.
         image_res = self.client.images.generate(
             model=self.image_model,
             prompt=final_prompt,
@@ -460,21 +449,22 @@ Return strict JSON with exactly:
         self._write_log(timestamp)
         return self.generated_image_path, self.final_prompt
 
-    def _build_image_prompt(self) -> str:
+    def _build_image_prompt(self):
         if self.client is None:
             return self.state.live_prompt
 
         sys_msg = (
-            "Turn the current collaborative painting state into one rich image-generation prompt. "
-            "Keep it faithful to the selected objects and visual choices. Output only the prompt."
+            "Turn the collaborative painting state into one rich image-generation prompt. "
+            "Keep all six yes-and objects. Use the user-facing layout as the main composition guide. "
+            "You may decide mood and lighting yourself. Output only the prompt."
         )
         try:
-            response = self.client.chat.completions.create(
-                model=self.text_model,
+            response = self._chat_completion(
                 messages=[
                     {"role": "system", "content": sys_msg},
                     {"role": "user", "content": json.dumps(asdict(self.state), ensure_ascii=False)},
                 ],
+                temperature=self.prompt_temperature,
             )
             prompt = response.choices[0].message.content.strip()
             return prompt or self.state.live_prompt
@@ -482,7 +472,7 @@ Return strict JSON with exactly:
             self.last_error = str(exc)
             return self.state.live_prompt
 
-    def _write_log(self, timestamp: str) -> None:
+    def _write_log(self, timestamp: str):
         log_data = {
             "timestamp": timestamp,
             "conversation": self.conversation_history,
@@ -495,5 +485,5 @@ Return strict JSON with exactly:
             encoding="utf-8",
         )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self):
         return asdict(self.state)

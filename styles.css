@@ -328,14 +328,16 @@ h2 {
 }
 
 .suggestion-button {
-  width: 100%;
+  width: fit-content;
   min-height: 34px;
   margin-top: 8px;
+  padding: 0 16px;
   border: 1px solid rgba(110, 231, 249, 0.45);
   border-radius: 12px;
   background: rgba(19, 44, 59, 0.78);
   color: var(--accent-2);
   font-weight: 900;
+  white-space: nowrap;
 }
 
 .creative-actions {

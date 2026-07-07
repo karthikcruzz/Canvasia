@@ -246,11 +246,11 @@ function renderConversationInput() {
     : "";
 
   ui.conversationInput.innerHTML = `
+    ${decideMarkup}
     <form class="chat-form" id="chatForm">
       <input class="chat-input" id="chatInput" autocomplete="off" placeholder="Enter your chat message..." ${disabled} />
       <button class="send-button" type="submit" aria-label="Send message" ${disabled}>Send</button>
-    </form>
-    ${decideMarkup}`;
+    </form>`;
 
   document.querySelector("#chatForm").addEventListener("submit", submitTurn);
   const decideButton = document.querySelector("#decideButton");

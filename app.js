@@ -15,29 +15,10 @@ function getBasePath() {
 }
 
 const BASE_PATH = getBasePath();
-const BACKEND_PORT = "8001";
-
-function getApiBasePath() {
-  if (BASE_PATH.includes(`/proxy/${BACKEND_PORT}`)) {
-    return BASE_PATH;
-  }
-
-  if (window.location.port === BACKEND_PORT) {
-    return BASE_PATH;
-  }
-
-  if (window.location.protocol.startsWith("http")) {
-    return `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}`;
-  }
-
-  return BASE_PATH;
-}
-
-const API_BASE_PATH = getApiBasePath();
 
 function withBase(route) {
   const cleanRoute = route.startsWith("/") ? route : `/${route}`;
-  return `${API_BASE_PATH}${cleanRoute}` || cleanRoute;
+  return `${BASE_PATH}${cleanRoute}` || cleanRoute;
 }
 
 const API = {
@@ -54,8 +35,7 @@ const API = {
 function resourceUrl(path) {
   if (!path) return null;
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  return `${API_BASE_PATH}${cleanPath}` || cleanPath;
+  return withBase(path);
 }
 
 const ui = {

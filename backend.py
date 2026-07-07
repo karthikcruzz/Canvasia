@@ -272,7 +272,6 @@ Rules:
 - One object only.
 - 1 to 4 words.
 - Fresh, visual, and paintable.
-- Do not use weathered lighthouse unless explicitly requested.
 - Avoid these existing objects: {sorted(existing)}
 """
         try:

@@ -60,6 +60,7 @@ const ui = {
 
 let selectedStarterValue = null;
 let busy = false;
+let imagePollTimer = null;
 
 let state = {
   chatStarted: false,
@@ -70,6 +71,7 @@ let state = {
   summary: {},
   aestheticScore: null,
   aestheticScores: null,
+  liveImageStatus: "idle",
 };
 
 function escapeHtml(value) {
@@ -133,6 +135,7 @@ function normalizeApiState(payload) {
       backendState.image_aesthetic_score ??
       null,
     aestheticScores: payload.aestheticScores || payload.aesthetic_scores || null,
+    liveImageStatus: payload.liveImageStatus || payload.live_image_status || "idle",
   };
 }
 
@@ -289,6 +292,11 @@ function renderSummary() {
 }
 
 function renderScore() {
+  if (state.liveImageStatus === "generating" && !state.aestheticScore) {
+    ui.aestheticScore.textContent = "Generating...";
+    return;
+  }
+
   if (state.aestheticScore === null || state.aestheticScore === undefined || state.aestheticScore === "") {
     ui.aestheticScore.textContent = "Pending";
     return;
@@ -319,6 +327,33 @@ function render() {
   renderScore();
   renderFinalOutput();
   syncButtons();
+  syncImagePolling();
+}
+
+function syncImagePolling() {
+  const shouldPoll = state.liveImageStatus === "generating";
+
+  if (shouldPoll && !imagePollTimer) {
+    imagePollTimer = window.setInterval(pollLiveImage, 2000);
+  }
+
+  if (!shouldPoll && imagePollTimer) {
+    window.clearInterval(imagePollTimer);
+    imagePollTimer = null;
+  }
+}
+
+async function pollLiveImage() {
+  try {
+    state = await apiRequest(API.state);
+    renderScore();
+    renderFinalOutput();
+    syncButtons();
+    syncImagePolling();
+  } catch (error) {
+    window.clearInterval(imagePollTimer);
+    imagePollTimer = null;
+  }
 }
 
 async function refreshState() {

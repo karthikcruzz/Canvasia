@@ -1,5 +1,6 @@
 import json
 import mimetypes
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -19,6 +20,11 @@ PUBLIC_FILES = {
 
 backend = ArtistBackend()
 chat_started = False
+generation_lock = threading.Lock()
+generation_running = False
+generation_pending = False
+generation_status = "idle"
+generation_epoch = 0
 
 
 def read_json(handler: BaseHTTPRequestHandler) -> dict:
@@ -45,6 +51,8 @@ def image_url(path: str | None) -> str | None:
 
 def serialize_state() -> dict:
     state = backend.to_dict()
+    with generation_lock:
+        live_image_status = generation_status
     return {
         "chatStarted": chat_started,
         "conversationHistory": backend.conversation_history,
@@ -66,8 +74,55 @@ def serialize_state() -> dict:
         "finalPrompt": backend.final_prompt,
         "aestheticScore": backend.aesthetic_score_average,
         "aestheticScores": backend.aesthetic_scores,
+        "liveImageStatus": live_image_status,
         "lastError": backend.last_error,
     }
+
+
+def queue_live_image_generation() -> None:
+    global generation_pending, generation_running, generation_status, generation_epoch
+
+    if not chat_started or not backend.state.object_contributions:
+        return
+
+    with generation_lock:
+        generation_pending = True
+        generation_epoch += 1
+        generation_status = "generating"
+        if generation_running:
+            return
+        generation_running = True
+
+    threading.Thread(target=live_image_worker, daemon=True).start()
+
+
+def live_image_worker() -> None:
+    global generation_pending, generation_running, generation_status
+
+    while True:
+        with generation_lock:
+            if not generation_pending:
+                generation_running = False
+                generation_status = "idle"
+                return
+            generation_pending = False
+            worker_epoch = generation_epoch
+
+        try:
+            backend.generate_painting()
+        except Exception as exc:
+            message = f"Live image generation failed: {exc}"
+            backend.last_error = f"{backend.last_error}; {message}" if backend.last_error else message
+
+        with generation_lock:
+            stale_after_reset = worker_epoch != generation_epoch and (
+                not chat_started or not backend.state.object_contributions
+            )
+            if stale_after_reset:
+                backend.generated_image_path = None
+                backend.final_prompt = None
+                backend.aesthetic_scores = {}
+                backend.aesthetic_score_average = None
 
 
 class CanvasiaHandler(BaseHTTPRequestHandler):
@@ -118,13 +173,17 @@ class CanvasiaHandler(BaseHTTPRequestHandler):
         starter = payload.get("starter") or "Human"
         chat_started = True
         backend.start_conversation(starter)
-        self.refresh_live_image()
+        queue_live_image_generation()
         write_json(self, 200, serialize_state())
 
     def reset(self):
-        global chat_started
+        global chat_started, generation_pending, generation_status, generation_epoch
         chat_started = False
         backend.reset()
+        with generation_lock:
+            generation_pending = False
+            generation_status = "idle"
+            generation_epoch += 1
         write_json(self, 200, serialize_state())
 
     def turn(self):
@@ -134,28 +193,19 @@ class CanvasiaHandler(BaseHTTPRequestHandler):
             write_json(self, 400, {"error": "Message cannot be empty"})
             return
         backend.process_turn(message)
-        self.refresh_live_image()
+        queue_live_image_generation()
         write_json(self, 200, serialize_state())
 
     def decide(self):
         backend.canvasia_decides()
-        self.refresh_live_image()
+        queue_live_image_generation()
         write_json(self, 200, serialize_state())
-
-    def refresh_live_image(self):
-        if not chat_started or not backend.state.object_contributions:
-            return
-        try:
-            backend.generate_painting()
-        except Exception as exc:
-            message = f"Live image generation failed: {exc}"
-            backend.last_error = f"{backend.last_error}; {message}" if backend.last_error else message
 
     def generate(self):
         if backend.state.stage != "Ready":
             write_json(self, 400, {"error": "Generate Image is available after Canvasia says the prompt is ready.", **serialize_state()})
             return
-        backend.generate_painting()
+        queue_live_image_generation()
         write_json(self, 200, serialize_state())
 
     def serve_file(self, path: Path):

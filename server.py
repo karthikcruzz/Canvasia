@@ -118,6 +118,7 @@ class CanvasiaHandler(BaseHTTPRequestHandler):
         starter = payload.get("starter") or "Human"
         chat_started = True
         backend.start_conversation(starter)
+        self.refresh_live_image()
         write_json(self, 200, serialize_state())
 
     def reset(self):
@@ -133,11 +134,22 @@ class CanvasiaHandler(BaseHTTPRequestHandler):
             write_json(self, 400, {"error": "Message cannot be empty"})
             return
         backend.process_turn(message)
+        self.refresh_live_image()
         write_json(self, 200, serialize_state())
 
     def decide(self):
         backend.canvasia_decides()
+        self.refresh_live_image()
         write_json(self, 200, serialize_state())
+
+    def refresh_live_image(self):
+        if not chat_started or not backend.state.object_contributions:
+            return
+        try:
+            backend.generate_painting()
+        except Exception as exc:
+            message = f"Live image generation failed: {exc}"
+            backend.last_error = f"{backend.last_error}; {message}" if backend.last_error else message
 
     def generate(self):
         if backend.state.stage != "Ready":

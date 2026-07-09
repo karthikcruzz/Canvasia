@@ -162,7 +162,7 @@ class ArtistBackend:
         if self.state.stage in {"Style", "Medium", "Color", "Layout"}:
             return self._process_choice_turn(clean_message)
 
-        reply = "The prompt is ready - click **Generate Image** when you're ready."
+        reply = "The prompt is ready - the live image is updated."
         self.conversation_history.append({"role": "user", "content": clean_message})
         self.conversation_history.append({"role": "assistant", "content": reply})
         return reply
@@ -221,7 +221,7 @@ class ArtistBackend:
             return f"{prefix}: **{value}**. What color palette should shape it?"
         if stage == "Color":
             return f"{prefix}: **{value}**. Describe the layout in one go."
-        return f"{prefix}: **{value}**. The prompt is ready - click **Generate Image** when you're ready."
+        return f"{prefix}: **{value}**. The prompt is ready - the live image is updated."
 
     def _yes_and_user_message(self, user_message: str):
         clean = self._strip_yes_and(user_message)
@@ -314,10 +314,14 @@ Current objects:
 Current state:
 {json.dumps(asdict(self.state), ensure_ascii=False)}
 
+Full session conversation history:
+{json.dumps(self.conversation_history, ensure_ascii=False)}
+
 Rules:
 - Be specific.
 - Keep it short enough to display in one UI box.
 - For Layout, write one concise sentence describing the full arrangement.
+- Consider the whole conversation, including the user's wording and Canvasia's earlier additions.
 """
         try:
             response = self._chat_completion(

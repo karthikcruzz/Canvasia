@@ -209,8 +209,6 @@ function setBusy(nextBusy) {
 }
 
 function syncButtons() {
-  const canGenerate = state.chatStarted && state.stage === "Ready";
-
   ui.starterButtons.forEach((button) => {
     const active = button.dataset.starter === selectedStarterValue;
     button.classList.toggle("active", active);
@@ -219,9 +217,9 @@ function syncButtons() {
 
   ui.startButton.disabled = busy || !selectedStarterValue;
   ui.resetButton.disabled = busy;
-  ui.generateButton.disabled = busy || !canGenerate;
-  ui.sketchButton.disabled = busy || !state.chatStarted;
-  ui.editImageButton.disabled = busy || !state.generatedImage;
+  if (ui.generateButton) ui.generateButton.disabled = true;
+  if (ui.sketchButton) ui.sketchButton.disabled = true;
+  if (ui.editImageButton) ui.editImageButton.disabled = true;
 }
 
 function renderMessages() {
@@ -303,6 +301,7 @@ function renderScore() {
 function renderFinalOutput() {
   if (!state.generatedImage) {
     ui.finalOutput.hidden = true;
+    ui.generatedImage.removeAttribute("src");
     return;
   }
 
@@ -386,22 +385,22 @@ async function submitTurn(event) {
   }
 }
 
-async function generatePainting() {
-  try {
-    setBusy(true);
-    ui.generateButton.innerHTML = '<span class="spinner"></span>Generating';
-    state = await apiRequest(API.generate, {
-      method: "POST",
-      body: "{}",
-    });
-    render();
-  } catch (error) {
-    window.alert(error.message);
-  } finally {
-    ui.generateButton.textContent = "Generate Image";
-    setBusy(false);
-  }
-}
+// async function generatePainting() {
+//   try {
+//     setBusy(true);
+//     ui.generateButton.innerHTML = '<span class="spinner"></span>Generating';
+//     state = await apiRequest(API.generate, {
+//       method: "POST",
+//       body: "{}",
+//     });
+//     render();
+//   } catch (error) {
+//     window.alert(error.message);
+//   } finally {
+//     ui.generateButton.textContent = "Generate Image";
+//     setBusy(false);
+//   }
+// }
 
 async function canvasiaDecides() {
   try {
@@ -418,29 +417,29 @@ async function canvasiaDecides() {
   }
 }
 
-async function callOptionalAction(url, label) {
-  try {
-    setBusy(true);
-    state = await apiRequest(url, {
-      method: "POST",
-      body: JSON.stringify({ image: state.generatedImage, prompt: state.finalPrompt }),
-    });
-    render();
-  } catch (error) {
-    window.alert(`${label} needs a matching backend endpoint. ${error.message}`);
-  } finally {
-    setBusy(false);
-  }
-}
+// async function callOptionalAction(url, label) {
+//   try {
+//     setBusy(true);
+//     state = await apiRequest(url, {
+//       method: "POST",
+//       body: JSON.stringify({ image: state.generatedImage, prompt: state.finalPrompt }),
+//     });
+//     render();
+//   } catch (error) {
+//     window.alert(`${label} needs a matching backend endpoint. ${error.message}`);
+//   } finally {
+//     setBusy(false);
+//   }
+// }
 
 ui.starterButtons.forEach((button) => {
   button.addEventListener("click", () => selectStarter(button.dataset.starter));
 });
 ui.startButton.addEventListener("click", () => startConversation(selectedStarterValue));
 ui.resetButton.addEventListener("click", resetConversation);
-ui.generateButton.addEventListener("click", generatePainting);
-ui.editImageButton.addEventListener("click", () => callOptionalAction(API.edit, "Edit Generated Image"));
-ui.sketchButton.addEventListener("click", () => callOptionalAction(API.sketch, "Sketch"));
+// ui.generateButton?.addEventListener("click", generatePainting);
+// ui.editImageButton?.addEventListener("click", () => callOptionalAction(API.edit, "Edit Generated Image"));
+// ui.sketchButton?.addEventListener("click", () => callOptionalAction(API.sketch, "Sketch"));
 
 refreshState()
   .catch(() => {

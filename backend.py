@@ -78,7 +78,8 @@ class ArtistBackend:
             or self.text_model
         )
         self.image_model = os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT_NAME", "gpt-image-1.5")
-        self.creative_temperature = float(os.environ.get("CANVASIA_CREATIVE_TEMPERATURE", "1.3"))
+        # self.creative_temperature = float(os.environ.get("CANVASIA_CREATIVE_TEMPERATURE", "1.3"))
+        self.creative_temperature = 1.8
         self.prompt_temperature = float(os.environ.get("CANVASIA_PROMPT_TEMPERATURE", "1.1"))
         self.state = PaintingState()
         self.conversation_history: list[dict[str, str]] = []
@@ -271,7 +272,9 @@ Return only JSON: {{"object": "short object noun phrase"}}
 Rules:
 - One object only.
 - 1 to 4 words.
+- Give only basic vocabulary words which are understandable by a 10th grade student.
 - Fresh, visual, and paintable.
+- Build upon the existing objects: {sorted(existing)}
 - Avoid these existing objects: {sorted(existing)}
 """
         try:
